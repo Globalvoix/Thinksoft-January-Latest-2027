@@ -624,6 +624,48 @@ ICON USAGE RULES (CRITICAL - PREVENTS BUILD ERRORS):
 - If you MUST use lucide-react, ONLY use these common exports: Menu, X, ChevronDown, ChevronRight, ChevronLeft, Search, Heart, Star, User, ShoppingCart, ArrowRight, ArrowLeft, Mail, Phone, MapPin, ExternalLink, Loader2
 - RE-RULE: When in doubt, use inline SVGs - they never cause import errors
 
+DESIGN-FIRST WORKFLOW:
+This is a ${isEdit ? 'FOLLOW-UP EDIT' : 'NEW BUILD FROM SCRATCH'}.
+
+${isEdit ? '' : `STEP 1 - CREATE DESIGN.MD (MANDATORY FOR ALL NEW BUILDS):
+Before generating any component code, FIRST create a file called \`design.md\` that defines the complete design system for this application based on the user's prompt. This is the foundation for every component you build.
+
+The design.md MUST include ALL of these sections with specific, detailed values derived from the user's prompt:
+
+1. **Metadata** - Version, design name, description, product type, brand summary
+2. **Brand Philosophy** - Personality, emotional tone, visual identity, positioning
+3. **Design Principles** - Simplicity, hierarchy, whitespace, consistency, interaction, clarity, accessibility
+4. **Color System** - Brand colors (primary/secondary/accent), surface colors, text colors, semantic colors, state colors, dark mode colors, gradients
+5. **Typography System** - Font families, type scale (hero display through micro), weights, line heights, letter spacing
+6. **Spacing System** - Base unit, margin/padding/section/layout/container/grid spacing
+7. **Shape Language** - Border radius scale, geometric philosophy, rounded vs sharp rules
+8. **Elevation & Depth** - Shadow system, layer hierarchy, blur, glassmorphism, card/modal/hover elevation
+9. **Layout System** - Containers (max width, gutters), grid system, section layouts
+10. **Responsive System** - Breakpoints (mobile/tablet/desktop/wide), responsive rules
+11. **Motion System** - Timing, easing, motion principles
+12. **Component Library** - Buttons, Inputs, Navigation, Cards, Feedback, Data, AI components
+13. **Interaction States** - Hover, active, focus, disabled, loading, selected, error, success
+14. **Navigation System** - Header behavior, sticky nav, mobile nav, mega menus, footer
+15. **Imagery & Illustration** - Illustration/photography/mockup/avatar style, iconography
+16. **Iconography System** - Icon style, stroke width, filled vs outline, sizing
+17. **Content & Copywriting** - Headline tone, CTA tone, capitalization, brand voice
+18. **Accessibility** - Contrast ratios, keyboard nav, focus visibility, reduced motion, touch targets
+19. **Data Visualization** - Chart colors, axis/grid/tooltip styling
+20. **AI UX Rules** - Response styling, streaming behavior, confidence indicators, loading states
+21. **Marketing Patterns** - Hero sections, CTA banners, pricing, testimonials, FAQ, feature grids
+22. **Dashboard Patterns** - Sidebar, tables, metrics cards, analytics panels, empty states
+23. **Do's and Don'ts** - Approved patterns, forbidden patterns, correct usage examples
+24. **Implementation Notes** - CSS variable naming, Tailwind mapping, component naming, folder structure
+25. **AI Generation Guidelines** - Layout instructions, component generation rules, brand consistency
+26. **Iteration Guide** - How to extend components, add tokens, naming conventions
+27. **Known Gaps** - Missing components, future improvements, planned systems
+28. **Appendix** - References, inspiration, external libraries
+
+Every value in design.md must be specific (actual hex colors like #1a365d, actual font names like 'Inter', actual spacing values like '24px'). Do NOT use generic placeholders.
+
+STEP 2 - GENERATE ALL COMPONENTS FOLLOWING DESIGN.MD:
+After design.md is created, generate ALL component files. EVERY design decision in every component MUST be derived from the design.md file. Use the exact colors, fonts, spacing, shadows, and other tokens defined in design.md. Do not deviate from the design system.`}
+
 REQUIRED SECTIONS FOR A COMPLETE WEB APPLICATION:
 When building a web application, you MUST include:
 1. **Header with Navigation** - Usually Header.jsx containing nav
@@ -633,6 +675,10 @@ When building a web application, you MUST include:
 5. **App.jsx** - Main app component that imports and uses all components
 
 CRITICAL: When generating App.jsx that imports components, you MUST generate EVERY component file in the same response. For each import statement you write, create a matching file block. Never leave missing imports.
+
+The FIRST file block in your response MUST be design.md (for new builds), followed by all component files. The file block format is exactly:
+<file path="design.md">content here</file>
+<file path="src/components/Hero.jsx">content here</file>
 
 ${isEdit ? `CRITICAL: THIS IS AN EDIT TO AN EXISTING APPLICATION
 
