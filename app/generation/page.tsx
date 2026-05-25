@@ -50,62 +50,15 @@ interface ChatMessage {
     commandType?: 'input' | 'output' | 'error' | 'success';
     brandingData?: any;
     sourceUrl?: string;
-    secretRequest?: SecretRequest;
-    secretSubmitted?: boolean;
-    secretResumePrompt?: string;
-    secretResumeSource?: 'chat' | 'initial';
   };
 }
 
-interface ProjectSecret {
-  name: string;
-  maskedValue: string;
-  hasValue: boolean;
-  updatedAt: number;
-  integration?: string | null;
-  isPublic?: boolean;
-}
-
-interface SecretRequest {
-  reason: string;
-  secrets: Array<{
-    name: string;
-    label?: string;
-    integration?: string;
-    public?: boolean;
-    description?: string;
-  }>;
-}
-
-interface ProjectIntegration {
-  provider: string;
-  displayName: string;
-  status: string;
-  requiredSecrets: Array<{ name: string; label?: string; public?: boolean }>;
-  connectedSecrets: string[];
-}
-
 function AISandboxPage() {
-  const [projectId] = useState<string>(() => {
-    if (typeof window === 'undefined') return 'default';
-    const existing = localStorage.getItem('open-lovable-project-id');
-    if (existing) return existing;
-    const id = crypto.randomUUID();
-    localStorage.setItem('open-lovable-project-id', id);
-    return id;
-  });
-
-  const projectHeaders = (extra?: Record<string, string>) => ({
-    'Content-Type': 'application/json',
-    'x-project-id': projectId,
-    ...(extra || {})
-  });
-
-  const [sandboxData, setSandboxData] = useState<SandboxData | null>(null);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState({ text: 'Not connected', active: false });
   const [responseArea, setResponseArea] = useState<string[]>([]);
   const [structureContent, setStructureContent] = useState('No sandbox created yet');
+  const [sandboxData, setSandboxData] = useState<SandboxData | null>(null);
   const [promptInput, setPromptInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
@@ -131,7 +84,7 @@ function AISandboxPage() {
   const [homeScreenFading, setHomeScreenFading] = useState(false);
   const [homeUrlInput, setHomeUrlInput] = useState('');
   const [homeContextInput, setHomeContextInput] = useState('');
-  const [activeTab, setActiveTab] = useState<'generation' | 'preview' | 'secrets'>('preview');
+  const [activeTab, setActiveTab] = useState<'generation' | 'preview'>('preview');
   const [showStyleSelector, setShowStyleSelector] = useState(false);
   const [selectedStyle, setSelectedStyle] = useState<string | null>(null);
   const [showLoadingBackground, setShowLoadingBackground] = useState(false);
@@ -148,13 +101,6 @@ function AISandboxPage() {
   const [sandboxFiles, setSandboxFiles] = useState<Record<string, string>>({});
   const [hasInitialSubmission, setHasInitialSubmission] = useState<boolean>(false);
   const [fileStructure, setFileStructure] = useState<string>('');
-  const [projectSecrets, setProjectSecrets] = useState<ProjectSecret[]>([]);
-  const [projectIntegrations, setProjectIntegrations] = useState<ProjectIntegration[]>([]);
-  const [newSecretName, setNewSecretName] = useState('');
-  const [newSecretValue, setNewSecretValue] = useState('');
-  const [visibleSecrets, setVisibleSecrets] = useState<Set<string>>(new Set());
-  const [secretInputValues, setSecretInputValues] = useState<Record<string, string>>({});
-  const [secretStatus, setSecretStatus] = useState<string>('');
   
   const [conversationContext, setConversationContext] = useState<{
     scrapedWebsites: Array<{ url: string; content: any; timestamp: Date }>;
@@ -173,7 +119,7 @@ function AISandboxPage() {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const codeDisplayRef = useRef<HTMLDivElement>(null);
-  const pendingSecretResumeRef = useRef<{ prompt: string; source: 'chat' | 'initial' } | null>(null);
+
   
   const [codeApplicationState, setCodeApplicationState] = useState<CodeApplicationState>({
     stage: null
@@ -540,7 +486,7 @@ function AISandboxPage() {
     try {
       const response = await fetch('/api/create-ai-sandbox-v2', {
         method: 'POST',
-        headers: projectHeaders(),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
       });
       
@@ -1083,370 +1029,6 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     }
   };
 
-  const fetchProjectContext = async () => {
-    try {
-      const [secretsRes, contextRes] = await Promise.all([
-        fetch('/api/secrets', { headers: projectHeaders() }),
-        fetch('/api/project-context', { headers: projectHeaders() })
-      ]);
-      if (secretsRes.ok) {
-        const secretsData = await secretsRes.json();
-        if (secretsData.success) {
-          setProjectSecrets(secretsData.secrets || []);
-        }
-      }
-      if (contextRes.ok) {
-        const contextData = await contextRes.json();
-        if (contextData.success) {
-          setProjectIntegrations(contextData.context.integrations || []);
-        }
-      }
-    } catch (error) {
-      console.error('[fetchProjectContext] Error fetching project context:', error);
-    }
-  };
-
-  const fetchSecrets = fetchProjectContext;
-
-  useEffect(() => {
-    fetchProjectContext();
-  }, []);
-
-  const parseSecretRequest = (text: string): SecretRequest | null => {
-    const blockMatch = text.match(/<request_secrets(?:\s+reason="([^"]*)")?\s*>([\s\S]*?)<\/request_secrets>/);
-    if (!blockMatch) return null;
-
-    const secrets: SecretRequest['secrets'] = [];
-    const secretRegex = /<secret\s+([^>]*?)\/?>/g;
-    let match;
-
-    while ((match = secretRegex.exec(blockMatch[2])) !== null) {
-      const attrs = match[1];
-      const name = attrs.match(/name="([^"]+)"/)?.[1]?.trim();
-      const label = attrs.match(/label="([^"]+)"/)?.[1]?.trim();
-      const integration = attrs.match(/integration="([^"]+)"/)?.[1]?.trim();
-      const publicAttr = attrs.match(/public="([^"]+)"/)?.[1]?.trim();
-      if (name) {
-        secrets.push({ name, label, integration, public: publicAttr === 'true' });
-      }
-    }
-
-    if (secrets.length === 0) return null;
-
-    return {
-      reason: blockMatch[1] || 'I need these secrets to continue.',
-      secrets
-    };
-  };
-
-  const stripSecretRequestTags = (text: string) =>
-    text.replace(/<request_secrets[\s\S]*?<\/request_secrets>/g, '').trim();
-
-  const getSecretRequestKey = (request: SecretRequest) =>
-    request.secrets
-      .map(secret => secret.name.trim().toUpperCase())
-      .sort()
-      .join('|');
-
-  const addSecretRequestMessage = (
-    content: string,
-    request: SecretRequest,
-    resume: { prompt: string; source: 'chat' | 'initial' }
-  ) => {
-    const requestKey = getSecretRequestKey(request);
-    pendingSecretResumeRef.current = resume;
-
-    setChatMessages(prev => {
-      const existingIndex = prev.findIndex(message => (
-        message.metadata?.secretRequest &&
-        !message.metadata.secretSubmitted &&
-        getSecretRequestKey(message.metadata.secretRequest) === requestKey
-      ));
-
-      const nextMessage: ChatMessage = {
-        content,
-        type: 'ai',
-        timestamp: new Date(),
-        metadata: {
-          secretRequest: request,
-          secretResumePrompt: resume.prompt,
-          secretResumeSource: resume.source
-        }
-      };
-
-      if (existingIndex >= 0) {
-        return prev.map((message, index) => (
-          index === existingIndex
-            ? {
-                ...message,
-                content,
-                timestamp: new Date(),
-                metadata: {
-                  ...message.metadata,
-                  secretRequest: request,
-                  secretResumePrompt: resume.prompt,
-                  secretResumeSource: resume.source
-                }
-              }
-            : message
-        ));
-      }
-
-      return [...prev, nextMessage];
-    });
-  };
-
-  const saveSecrets = async (secrets: Array<{ name: string; value: string; integration?: string; public?: boolean }>) => {
-    const validSecrets = secrets.filter(secret => secret.name.trim() && secret.value.trim());
-    if (validSecrets.length === 0) return false;
-
-    setSecretStatus('Saving secrets...');
-
-    const response = await fetch('/api/secrets', {
-      method: 'POST',
-      headers: projectHeaders(),
-      body: JSON.stringify({ secrets: validSecrets })
-    });
-
-    const data = await response.json();
-    if (!response.ok || !data.success) {
-      setSecretStatus(data.error || 'Failed to save secrets');
-      return false;
-    }
-
-    setProjectSecrets(data.secrets || []);
-    await fetchProjectContext();
-    setTimeout(() => setSecretStatus(''), 2500);
-    return true;
-  };
-
-  const handleAddSecret = async () => {
-    const saved = await saveSecrets([{ name: newSecretName, value: newSecretValue }]);
-    if (saved) {
-      setNewSecretName('');
-      setNewSecretValue('');
-    }
-  };
-
-  const handleDeleteSecret = async (name: string) => {
-const response = await fetch('/api/secrets', {
-      method: 'DELETE',
-      headers: projectHeaders(),
-      body: JSON.stringify({ name })
-    });
-    const data = await response.json();
-    if (data.success) {
-      setProjectSecrets(data.secrets || []);
-    }
-  };
-
-  const handleSubmitRequestedSecrets = async (messageIndex: number, request: SecretRequest) => {
-    const secrets = request.secrets.map(secret => ({
-      name: secret.name,
-      value: secretInputValues[`${messageIndex}:${secret.name}`] || '',
-      integration: secret.integration,
-      public: secret.public
-    }));
-
-    if (secrets.some(secret => !secret.value.trim())) {
-      setSecretStatus('Enter every requested secret before submitting.');
-      return;
-    }
-
-    const saved = await saveSecrets(secrets);
-    if (!saved) return;
-
-    const submittedMessage = chatMessages[messageIndex];
-    const resume = {
-      prompt: submittedMessage?.metadata?.secretResumePrompt || pendingSecretResumeRef.current?.prompt || homeUrlInput.trim(),
-      source: submittedMessage?.metadata?.secretResumeSource || pendingSecretResumeRef.current?.source || 'initial'
-    };
-    const requestKey = getSecretRequestKey(request);
-
-    setChatMessages(prev => prev.map((message, index) => (
-      index === messageIndex ||
-      (
-        message.metadata?.secretRequest &&
-        getSecretRequestKey(message.metadata.secretRequest) === requestKey
-      )
-        ? {
-            ...message,
-            content: 'Secrets submitted. Continuing generation...',
-            metadata: {
-              ...message.metadata,
-              secretSubmitted: true
-            }
-          }
-        : message
-    )));
-
-    addChatMessage(
-      `Saved ${secrets.length} secret${secrets.length === 1 ? '' : 's'}. Continuing generation...`,
-      'system'
-    );
-
-    pendingSecretResumeRef.current = null;
-
-    setTimeout(() => {
-      if (resume.source === 'chat') {
-        void sendChatMessage(resume.prompt, { skipUserMessage: true });
-      } else {
-        void startGeneration({ preserveMessages: true });
-      }
-    }, 150);
-  };
-
-  const renderSecretsTab = () => (
-    <div className="absolute inset-0 overflow-y-auto bg-white">
-      <div className="border-b border-gray-200 px-6 py-5">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-base font-semibold text-gray-950">Secrets</h2>
-            <p className="mt-1 text-sm text-gray-500">
-              Values are stored for this project and synced into the sandbox as env variables.
-            </p>
-          </div>
-          {secretStatus && (
-            <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
-              {secretStatus}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="px-6 py-5">
-        {/* Integrations Status */}
-        {projectIntegrations.length > 0 && (
-          <div className="mb-6">
-            <h3 className="mb-2 text-sm font-semibold text-gray-950">Integrations</h3>
-            <div className="grid gap-2">
-              {projectIntegrations.map(integration => (
-                <div key={integration.provider} className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <div className={`h-2 w-2 rounded-full ${integration.status === 'connected' ? 'bg-green-500' : 'bg-amber-400'}`} />
-                    <span className="text-sm font-medium text-gray-900">{integration.displayName}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {integration.status === 'connected' ? (
-                      <span className="text-xs font-medium text-green-600">Connected</span>
-                    ) : (
-                      <span className="text-xs text-amber-600">
-                        Missing: {integration.requiredSecrets
-                          .filter((secret: any) => !integration.connectedSecrets.includes(secret.name))
-                          .map((secret: any) => secret.label || secret.name)
-                          .join(', ')}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="mb-5 grid grid-cols-[minmax(180px,0.9fr)_minmax(220px,1.1fr)_auto] gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
-          <input
-            value={newSecretName}
-            onChange={(event) => setNewSecretName(event.target.value)}
-            placeholder="VITE_PUBLIC_KEY"
-            className="h-10 rounded-md border border-gray-200 bg-white px-3 text-sm font-mono text-gray-900 outline-none transition focus:border-gray-400 focus:ring-2 focus:ring-gray-100"
-          />
-          <input
-            value={newSecretValue}
-            onChange={(event) => setNewSecretValue(event.target.value)}
-            placeholder="Secret value"
-            type="password"
-            className="h-10 rounded-md border border-gray-200 bg-white px-3 text-sm text-gray-900 outline-none transition focus:border-gray-400 focus:ring-2 focus:ring-gray-100"
-          />
-          <button
-            onClick={handleAddSecret}
-            disabled={!newSecretName.trim() || !newSecretValue.trim()}
-            className="inline-flex h-10 items-center gap-2 rounded-md bg-gray-950 px-4 text-sm font-medium text-white transition hover:bg-gray-800 disabled:bg-gray-200 disabled:text-gray-500"
-          >
-            <FiPlus className="h-4 w-4" />
-            Add
-          </button>
-        </div>
-
-        <div className="overflow-hidden rounded-lg border border-gray-200">
-          <div className="grid grid-cols-[minmax(180px,0.9fr)_minmax(220px,1.1fr)_56px] border-b border-gray-200 bg-gray-50 px-4 py-2 text-xs font-medium uppercase tracking-wide text-gray-500">
-            <div>Name</div>
-            <div>Value</div>
-            <div />
-          </div>
-
-          {projectSecrets.length === 0 ? (
-            <div className="flex min-h-[160px] flex-col items-center justify-center gap-2 px-6 py-10 text-center">
-              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 text-gray-500">
-                <FiLock className="h-5 w-5" />
-              </div>
-              <div className="text-sm font-medium text-gray-900">No secrets yet</div>
-              <div className="max-w-sm text-sm text-gray-500">
-                Add one manually, or let the AI ask for required env variables in chat.
-              </div>
-            </div>
-          ) : (
-            projectSecrets.map(secret => (
-              <div
-                key={secret.name}
-                className="grid grid-cols-[minmax(180px,0.9fr)_minmax(220px,1.1fr)_56px] items-center border-b border-gray-100 px-4 py-3 last:border-b-0"
-              >
-                <div className="flex min-w-0 items-center gap-3">
-                  <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-gray-100 text-gray-600">
-                    <FiKey className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="truncate font-mono text-sm font-medium text-gray-950">{secret.name}</div>
-                    {secret.integration && (
-                      <div className="text-xs text-gray-400">{secret.integration}</div>
-                    )}
-                  </div>
-                </div>
-                <div className="flex min-w-0 items-center justify-between gap-3 font-mono text-sm text-gray-500">
-                  <span className="truncate">{visibleSecrets.has(secret.name) ? 'Saved secret value' : secret.maskedValue}</span>
-                  <button
-                    onClick={() => {
-                      setVisibleSecrets(prev => {
-                        const next = new Set(prev);
-                        if (next.has(secret.name)) next.delete(secret.name);
-                        else next.add(secret.name);
-                        return next;
-                      });
-                    }}
-                    className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md text-gray-500 transition hover:bg-gray-100 hover:text-gray-900"
-                    title={visibleSecrets.has(secret.name) ? 'Hide value' : 'Show value'}
-                  >
-                    {visibleSecrets.has(secret.name) ? <FiEyeOff className="h-4 w-4" /> : <FiEye className="h-4 w-4" />}
-                  </button>
-                </div>
-                <button
-                  onClick={() => handleDeleteSecret(secret.name)}
-                  className="flex h-8 w-8 items-center justify-center rounded-md text-gray-400 transition hover:bg-red-50 hover:text-red-600"
-                  title="Delete secret"
-                >
-                  <FiTrash2 className="h-4 w-4" />
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-
-      <div className="border-t border-gray-200 px-6 py-5">
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-base font-semibold text-gray-950">Configurations</h3>
-          <button className="inline-flex h-9 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 transition hover:bg-gray-50">
-            <FiPlus className="h-4 w-4" />
-            New configuration
-          </button>
-        </div>
-        <p className="text-sm text-gray-600">
-          Use configurations for non-sensitive values that can be visible in generated code.
-        </p>
-      </div>
-    </div>
-  );
-
 //   const restartViteServer = async () => {
 //     try {
 //       addChatMessage('Restarting Vite dev server...', 'system');
@@ -1499,10 +1081,6 @@ const response = await fetch('/api/secrets', {
 //   };
 
   const renderMainContent = () => {
-    if (activeTab === 'secrets') {
-      return renderSecretsTab();
-    }
-
     if (activeTab === 'generation' && (generationProgress.isGenerating || generationProgress.files.length > 0)) {
       return (
         /* Generation Tab Content */
@@ -2165,7 +1743,7 @@ const response = await fetch('/api/secrets', {
       
       const response = await fetch('/api/generate-ai-code-stream', {
         method: 'POST',
-        headers: projectHeaders(),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: message,
           model: aiModel,
@@ -2180,10 +1758,9 @@ const response = await fetch('/api/secrets', {
       
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
-      let generatedCode = '';
-      let explanation = '';
-      let waitingForSecrets = false;
-      let buffer = ''; // Buffer for incomplete lines
+        let generatedCode = '';
+        let explanation = '';
+        let buffer = ''; // Buffer for incomplete lines
       
       if (reader) {
         while (true) {
@@ -2218,25 +1795,8 @@ const response = await fetch('/api/secrets', {
                     thinkingDuration: data.duration
                   }));
                 } else if (data.type === 'conversation') {
-                  // Add conversational text to chat only if it's not code
+                  // Add conversational text to chat
                   let text = data.text || '';
-                  const secretRequest = parseSecretRequest(text);
-                  if (secretRequest) {
-                    addSecretRequestMessage(
-                      stripSecretRequestTags(text) || secretRequest.reason,
-                      secretRequest,
-                      { prompt: message, source: 'chat' }
-                    );
-                    waitingForSecrets = true;
-                    setGenerationProgress(prev => ({
-                      ...prev,
-                      isGenerating: false,
-                      isStreaming: false,
-                      isThinking: false,
-                      status: 'Waiting for secrets'
-                    }));
-                    continue;
-                  }
                   
                   // Remove package tags from the text
                   text = text.replace(/<package>[^<]*<\/package>/g, '');
@@ -2368,18 +1928,6 @@ const response = await fetch('/api/secrets', {
                 } else if (data.type === 'complete') {
                   generatedCode = data.generatedCode;
                   explanation = data.explanation;
-
-                  const secretRequest = parseSecretRequest(generatedCode) || parseSecretRequest(explanation || '');
-                  if (secretRequest) {
-                    generatedCode = stripSecretRequestTags(generatedCode);
-                    explanation = stripSecretRequestTags(explanation || '');
-                    addSecretRequestMessage(
-                      stripSecretRequestTags(explanation || secretRequest.reason) || secretRequest.reason,
-                      secretRequest,
-                      { prompt: message, source: 'chat' }
-                    );
-                    waitingForSecrets = true;
-                  }
                   
                   // Save the last generated code
                   setConversationContext(prev => ({
@@ -2444,18 +1992,6 @@ const response = await fetch('/api/secrets', {
         }
       }
       
-      if (waitingForSecrets && !generatedCode.trim()) {
-        setGenerationProgress(prev => ({
-          ...prev,
-          isGenerating: false,
-          isStreaming: false,
-          isThinking: false,
-          status: 'Waiting for secrets'
-        }));
-        setLoading(false);
-        return;
-      }
-
       if (generatedCode) {
         // Parse files from generated code for metadata
         const fileRegex = /<file path="([^"]+)">([^]*?)<\/file>/g;
@@ -3136,7 +2672,7 @@ Focus on creating a polished, professional application that looks great and work
         
         const aiResponse = await fetch('/api/generate-ai-code-stream', {
           method: 'POST',
-          headers: projectHeaders(),
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
             prompt,
             model: aiModel,
@@ -3185,25 +2721,8 @@ Focus on creating a polished, professional application that looks great and work
                     thinkingDuration: data.duration
                   }));
                 } else if (data.type === 'conversation') {
-                  // Add conversational text to chat only if it's not code
+                  // Add conversational text to chat
                   let text = data.text || '';
-                  const secretRequest = parseSecretRequest(text);
-                  if (secretRequest) {
-                    addSecretRequestMessage(
-                      stripSecretRequestTags(text) || secretRequest.reason,
-                      secretRequest,
-                      { prompt: userDescription, source: 'initial' }
-                    );
-                    waitingForSecrets = true;
-                    setGenerationProgress(prev => ({
-                      ...prev,
-                      isGenerating: false,
-                      isStreaming: false,
-                      isThinking: false,
-                      status: 'Waiting for secrets'
-                    }));
-                    continue;
-                  }
                   
                   // Remove package tags from the text
                   text = text.replace(/<package>[^<]*<\/package>/g, '');
@@ -3315,18 +2834,6 @@ Focus on creating a polished, professional application that looks great and work
                 } else if (data.type === 'complete') {
                   generatedCode = data.generatedCode;
                   explanation = data.explanation;
-
-                  const secretRequest = parseSecretRequest(generatedCode) || parseSecretRequest(explanation || '');
-                  if (secretRequest) {
-                    generatedCode = stripSecretRequestTags(generatedCode);
-                    explanation = stripSecretRequestTags(explanation || '');
-                    addSecretRequestMessage(
-                      stripSecretRequestTags(explanation || secretRequest.reason) || secretRequest.reason,
-                      secretRequest,
-                      { prompt: userDescription, source: 'initial' }
-                    );
-                    waitingForSecrets = true;
-                  }
                   
                   // Save the last generated code
                   setConversationContext(prev => ({
@@ -3348,21 +2855,6 @@ Focus on creating a polished, professional application that looks great and work
           status: 'Generation complete!'
         }));
         
-        if (waitingForSecrets && !generatedCode.trim()) {
-          setGenerationProgress(prev => ({
-            ...prev,
-            isGenerating: false,
-            isStreaming: false,
-            isThinking: false,
-            status: 'Waiting for secrets'
-          }));
-          setUrlStatus([]);
-          setIsPreparingDesign(false);
-          setIsStartingNewGeneration(false);
-          setLoadingStage(null);
-          return;
-        }
-
         if (generatedCode) {
           addChatMessage('AI app generation complete!', 'system');
           
@@ -3660,76 +3152,8 @@ Focus on creating a polished, professional application that looks great and work
                     ) : (
                       <span className="text-sm">{msg.content}</span>
                     )}
-                      </div>
+                    </div>
 
-                      {msg.metadata?.secretRequest && (
-                        <div className="mt-3 w-full max-w-[440px] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
-                          <div className="flex items-start gap-3 border-b border-gray-200 bg-gray-50 px-4 py-3">
-                            <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-white text-gray-600 shadow-sm ring-1 ring-gray-200">
-                              <FiLock className="h-4 w-4" />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="text-sm font-semibold text-gray-950">Required secrets</div>
-                              <div className="mt-1 text-xs leading-5 text-gray-500">
-                                These values will be saved as sandbox environment variables.
-                              </div>
-                            </div>
-                          </div>
-                          <div className="space-y-3 px-4 py-4">
-                            {msg.metadata.secretRequest.secrets.map(secret => (
-                              <label key={secret.name} className="block">
-                                <div className="mb-1.5 flex items-center justify-between gap-3">
-                                  <span className="truncate text-xs font-medium text-gray-600">
-                                    {secret.label || secret.name}
-                                  </span>
-                                  <span className="truncate font-mono text-[11px] text-gray-400">
-                                    {secret.name}
-                                  </span>
-                                </div>
-                                <div className="relative">
-                                  <input
-                                    value={secretInputValues[`${idx}:${secret.name}`] || ''}
-                                    onChange={(event) => {
-                                      const key = `${idx}:${secret.name}`;
-                                      setSecretInputValues(prev => ({ ...prev, [key]: event.target.value }));
-                                    }}
-                                    disabled={msg.metadata?.secretSubmitted}
-                                    type={visibleSecrets.has(`${idx}:${secret.name}`) ? 'text' : 'password'}
-                                    placeholder="Paste value"
-                                    className="h-10 w-full rounded-md border border-gray-200 bg-white px-3 pr-10 font-mono text-sm text-gray-900 outline-none transition focus:border-gray-400 focus:ring-2 focus:ring-gray-100 disabled:bg-gray-50 disabled:text-gray-500"
-                                  />
-                                  <button
-                                    onClick={() => {
-                                      const key = `${idx}:${secret.name}`;
-                                      setVisibleSecrets(prev => {
-                                        const next = new Set(prev);
-                                        if (next.has(key)) next.delete(key);
-                                        else next.add(key);
-                                        return next;
-                                      });
-                                    }}
-                                    className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-gray-500 transition hover:bg-gray-100 hover:text-gray-900"
-                                    title={visibleSecrets.has(`${idx}:${secret.name}`) ? 'Hide value' : 'Show value'}
-                                  >
-                                    {visibleSecrets.has(`${idx}:${secret.name}`) ? <FiEyeOff className="h-4 w-4" /> : <FiEye className="h-4 w-4" />}
-                                  </button>
-                                </div>
-                              </label>
-                            ))}
-                          </div>
-                          <div className="flex justify-end border-t border-gray-200 bg-gray-50 px-4 py-3">
-                            <button
-                              onClick={() => handleSubmitRequestedSecrets(idx, msg.metadata!.secretRequest!)}
-                              disabled={Boolean(msg.metadata.secretSubmitted)}
-                              className="inline-flex h-9 items-center gap-2 rounded-md bg-gray-950 px-4 text-sm font-medium text-white transition hover:bg-gray-800 disabled:bg-gray-200 disabled:text-gray-500"
-                            >
-                              <FiLock className="h-4 w-4" />
-                              {msg.metadata.secretSubmitted ? 'Submitted' : 'Submit'}
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                  
                       {/* Show branding data if this is a brand extraction message */}
                       {msg.metadata?.brandingData && (
                         <div className="mt-3 bg-gradient-to-br from-gray-50 to-white border-2 border-gray-200 rounded-xl overflow-hidden max-w-[500px] shadow-sm">
@@ -4114,21 +3538,6 @@ Focus on creating a polished, professional application that looks great and work
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                     </svg>
                     <span>View</span>
-                  </div>
-                </button>
-                <button
-                  onClick={() => setActiveTab('secrets')}
-                  className={`px-3 py-1 rounded transition-all text-xs font-medium ${
-                    activeTab === 'secrets'
-                      ? 'bg-white text-gray-900 shadow-sm'
-                      : 'bg-transparent text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 11V7a4 4 0 118 0v4m-9 0h10a1 1 0 011 1v8H6v-8a1 1 0 011-1z" />
-                    </svg>
-                    <span>Secrets</span>
                   </div>
                 </button>
               </div>

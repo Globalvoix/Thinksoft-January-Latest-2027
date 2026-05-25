@@ -2,8 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SandboxFactory } from '@/lib/sandbox/factory';
 import type { SandboxState } from '@/types/sandbox';
 import { sandboxManager } from '@/lib/sandbox/sandbox-manager';
-import { getRequestOrigin, serializeSandboxEnv } from '@/lib/sandbox-env';
-import { getProjectIdFromRequest, ensureProject } from '@/lib/project-id';
 
 // Store active sandbox globally
 declare global {
@@ -15,10 +13,7 @@ declare global {
 
 export async function POST(request: NextRequest) {
   try {
-    const projectId = getProjectIdFromRequest(request);
-    await ensureProject(projectId);
-    
-    console.log('[create-ai-sandbox-v2] Creating sandbox for project:', projectId);
+    console.log('[create-ai-sandbox-v2] Creating sandbox...');
     
     // Clean up all existing sandboxes
     console.log('[create-ai-sandbox-v2] Cleaning up existing sandboxes...');
@@ -47,10 +42,6 @@ export async function POST(request: NextRequest) {
     
     console.log('[create-ai-sandbox-v2] Setting up Vite React app...');
     await provider.setupViteApp();
-    await provider.writeFile('.env.local', await serializeSandboxEnv(getRequestOrigin(request), projectId));
-    if (typeof provider.restartViteServer === 'function') {
-      await provider.restartViteServer();
-    }
     
     // Register with sandbox manager
     sandboxManager.registerSandbox(sandboxInfo.sandboxId, provider);
