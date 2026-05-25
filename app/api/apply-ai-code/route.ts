@@ -16,6 +16,85 @@ interface ParsedResponse {
   structure: string | null;
 }
 
+const BUILT_IN_MODULES = new Set([
+  'assert',
+  'buffer',
+  'child_process',
+  'crypto',
+  'events',
+  'fs',
+  'http',
+  'https',
+  'os',
+  'path',
+  'process',
+  'querystring',
+  'stream',
+  'url',
+  'util',
+  'zlib'
+]);
+
+const getPackageNameFromImport = (importPath: string) => {
+  if (
+    !importPath ||
+    importPath.startsWith('.') ||
+    importPath.startsWith('/') ||
+    importPath.startsWith('@/') ||
+    importPath.startsWith('node:') ||
+    importPath.startsWith('vite/') ||
+    importPath.includes('?')
+  ) {
+    return null;
+  }
+
+  const packageName = importPath.startsWith('@')
+    ? importPath.split('/').slice(0, 2).join('/')
+    : importPath.split('/')[0];
+
+  if (!packageName || BUILT_IN_MODULES.has(packageName)) {
+    return null;
+  }
+
+  return packageName;
+};
+
+const extractPackagesFromCode = (content: string) => {
+  const packages = new Set<string>();
+  const patterns = [
+    /(?:import|export)\s+(?:type\s+)?(?:[\s\S]*?\s+from\s*)?['"]([^'"]+)['"]/g,
+    /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+    /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g
+  ];
+
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      const packageName = getPackageNameFromImport(match[1]);
+      if (packageName) {
+        packages.add(packageName);
+      }
+    }
+  }
+
+  return [...packages];
+};
+
+const extractPackagesFromFiles = (files: Array<{ path: string; content: string }>) => {
+  const packages = new Set<string>();
+
+  for (const file of files) {
+    if (!file?.path || typeof file.content !== 'string') continue;
+    if (!file.path.match(/\.(jsx?|tsx?)$/)) continue;
+
+    for (const packageName of extractPackagesFromCode(file.content)) {
+      packages.add(packageName);
+    }
+  }
+
+  return [...packages];
+};
+
 function parseAIResponse(response: string): ParsedResponse {
   const sections = {
     files: [] as Array<{ path: string; content: string }>,
@@ -226,15 +305,28 @@ export async function POST(request: NextRequest) {
       errors: [] as string[]
     };
     
-    // Combine packages from tool calls and parsed XML tags
-    const allPackages = [...packages.filter((pkg: any) => pkg && typeof pkg === 'string'), ...parsed.packages];
-    const uniquePackages = [...new Set(allPackages)]; // Remove duplicates
+    // Combine packages from tool calls, parsed XML tags, and generated imports.
+    const importPackages = extractPackagesFromFiles(parsed.files);
+    if (importPackages.length > 0) {
+      console.log('[apply-ai-code] Packages detected from generated imports:', importPackages);
+    }
+
+    const allPackages = [
+      ...packages.filter((pkg: any) => pkg && typeof pkg === 'string'),
+      ...parsed.packages,
+      ...importPackages
+    ];
+    const uniquePackages = [...new Set(allPackages)]
+      .map(pkg => (typeof pkg === 'string' ? pkg.trim() : ''))
+      .filter(pkg => pkg !== '')
+      .map(pkg => getPackageNameFromImport(pkg) || pkg)
+      .filter(pkg => pkg !== 'react' && pkg !== 'react-dom');
     
     if (uniquePackages.length > 0) {
       console.log('[apply-ai-code] Installing packages from XML tags and tool calls:', uniquePackages);
       
       try {
-        const installResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/install-packages`, {
+        const installResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/install-packages-v2`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ packages: uniquePackages })
@@ -244,11 +336,11 @@ export async function POST(request: NextRequest) {
           const installResult = await installResponse.json();
           console.log('[apply-ai-code] Package installation result:', installResult);
           
-          if (installResult.installed && installResult.installed.length > 0) {
-            results.packagesInstalled = installResult.installed;
-          }
-          if (installResult.failed && installResult.failed.length > 0) {
-            results.packagesFailed = installResult.failed;
+          if (installResult.success) {
+            results.packagesInstalled = uniquePackages;
+          } else {
+            results.packagesFailed = uniquePackages;
+            results.errors.push(installResult.error || 'Package installation failed');
           }
         }
       } catch (error) {

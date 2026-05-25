@@ -133,7 +133,7 @@ export default function HeroInput({
 
         <div className="p-10 flex justify-end items-center relative">
           <button
-            onClick={onSubmit}
+            onClick={() => onSubmit()}
             disabled={!value.trim()}
             className={`
               button relative rounded-10 px-8 py-8 text-label-medium font-medium

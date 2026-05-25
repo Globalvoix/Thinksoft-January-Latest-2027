@@ -16,6 +16,12 @@ import {
   FiChevronRight, 
   FiChevronDown,
   FiGithub,
+  FiEye,
+  FiEyeOff,
+  FiKey,
+  FiLock,
+  FiPlus,
+  FiTrash2,
   BsFolderFill, 
   BsFolder2Open,
   SiJavascript, 
@@ -44,23 +50,57 @@ interface ChatMessage {
     commandType?: 'input' | 'output' | 'error' | 'success';
     brandingData?: any;
     sourceUrl?: string;
+    secretRequest?: SecretRequest;
+    secretSubmitted?: boolean;
+    secretResumePrompt?: string;
+    secretResumeSource?: 'chat' | 'initial';
   };
 }
 
-interface ScrapeData {
-  success: boolean;
-  content?: string;
-  url?: string;
-  title?: string;
-  source?: string;
-  screenshot?: string;
-  structured?: any;
-  metadata?: any;
-  message?: string;
-  error?: string;
+interface ProjectSecret {
+  name: string;
+  maskedValue: string;
+  hasValue: boolean;
+  updatedAt: number;
+  integration?: string | null;
+  isPublic?: boolean;
+}
+
+interface SecretRequest {
+  reason: string;
+  secrets: Array<{
+    name: string;
+    label?: string;
+    integration?: string;
+    public?: boolean;
+    description?: string;
+  }>;
+}
+
+interface ProjectIntegration {
+  provider: string;
+  displayName: string;
+  status: string;
+  requiredSecrets: Array<{ name: string; label?: string; public?: boolean }>;
+  connectedSecrets: string[];
 }
 
 function AISandboxPage() {
+  const [projectId] = useState<string>(() => {
+    if (typeof window === 'undefined') return 'default';
+    const existing = localStorage.getItem('open-lovable-project-id');
+    if (existing) return existing;
+    const id = crypto.randomUUID();
+    localStorage.setItem('open-lovable-project-id', id);
+    return id;
+  });
+
+  const projectHeaders = (extra?: Record<string, string>) => ({
+    'Content-Type': 'application/json',
+    'x-project-id': projectId,
+    ...(extra || {})
+  });
+
   const [sandboxData, setSandboxData] = useState<SandboxData | null>(null);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState({ text: 'Not connected', active: false });
@@ -91,7 +131,7 @@ function AISandboxPage() {
   const [homeScreenFading, setHomeScreenFading] = useState(false);
   const [homeUrlInput, setHomeUrlInput] = useState('');
   const [homeContextInput, setHomeContextInput] = useState('');
-  const [activeTab, setActiveTab] = useState<'generation' | 'preview'>('preview');
+  const [activeTab, setActiveTab] = useState<'generation' | 'preview' | 'secrets'>('preview');
   const [showStyleSelector, setShowStyleSelector] = useState(false);
   const [selectedStyle, setSelectedStyle] = useState<string | null>(null);
   const [showLoadingBackground, setShowLoadingBackground] = useState(false);
@@ -108,6 +148,13 @@ function AISandboxPage() {
   const [sandboxFiles, setSandboxFiles] = useState<Record<string, string>>({});
   const [hasInitialSubmission, setHasInitialSubmission] = useState<boolean>(false);
   const [fileStructure, setFileStructure] = useState<string>('');
+  const [projectSecrets, setProjectSecrets] = useState<ProjectSecret[]>([]);
+  const [projectIntegrations, setProjectIntegrations] = useState<ProjectIntegration[]>([]);
+  const [newSecretName, setNewSecretName] = useState('');
+  const [newSecretValue, setNewSecretValue] = useState('');
+  const [visibleSecrets, setVisibleSecrets] = useState<Set<string>>(new Set());
+  const [secretInputValues, setSecretInputValues] = useState<Record<string, string>>({});
+  const [secretStatus, setSecretStatus] = useState<string>('');
   
   const [conversationContext, setConversationContext] = useState<{
     scrapedWebsites: Array<{ url: string; content: any; timestamp: Date }>;
@@ -126,6 +173,7 @@ function AISandboxPage() {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const codeDisplayRef = useRef<HTMLDivElement>(null);
+  const pendingSecretResumeRef = useRef<{ prompt: string; source: 'chat' | 'initial' } | null>(null);
   
   const [codeApplicationState, setCodeApplicationState] = useState<CodeApplicationState>({
     stage: null
@@ -170,64 +218,25 @@ function AISandboxPage() {
       if (sandboxCreated) return;
       
       // First check URL parameters (from home page navigation)
-      const urlParam = searchParams.get('url');
-      const templateParam = searchParams.get('template');
       const detailsParam = searchParams.get('details');
       
       // Then check session storage as fallback
-      const storedUrl = urlParam || sessionStorage.getItem('targetUrl');
-      const storedStyle = templateParam || sessionStorage.getItem('selectedStyle');
+      const storedPrompt = sessionStorage.getItem('userPrompt');
       const storedModel = sessionStorage.getItem('selectedModel');
-      const storedInstructions = sessionStorage.getItem('additionalInstructions');
       
-      if (storedUrl) {
-        // Mark that we have an initial submission since we're loading with a URL
+      if (storedPrompt) {
+        // Mark that we have an initial submission since we're loading with a prompt
         setHasInitialSubmission(true);
         
         // Clear sessionStorage after reading  
-        sessionStorage.removeItem('targetUrl');
-        sessionStorage.removeItem('selectedStyle');
+        sessionStorage.removeItem('userPrompt');
         sessionStorage.removeItem('selectedModel');
-        sessionStorage.removeItem('additionalInstructions');
-        // Note: Don't clear siteMarkdown here, it will be cleared when used
         
         // Set the values in the component state
-        setHomeUrlInput(storedUrl);
-        setSelectedStyle(storedStyle || 'modern');
+        setHomeUrlInput(storedPrompt);
         
-        // Add details to context if provided
         if (detailsParam) {
           setHomeContextInput(detailsParam);
-        } else if (storedStyle && !urlParam) {
-          // Only apply stored style if no screenshot URL is provided
-          // This prevents unwanted style inheritance when using screenshot search
-          const styleNames: Record<string, string> = {
-            '1': 'Glassmorphism',
-            '2': 'Neumorphism',
-            '3': 'Brutalism',
-            '4': 'Minimalist',
-            '5': 'Dark Mode',
-            '6': 'Gradient Rich',
-            '7': '3D Depth',
-            '8': 'Retro Wave',
-            'modern': 'Modern clean and minimalist',
-            'playful': 'Fun colorful and playful',
-            'professional': 'Corporate professional and sleek',
-            'artistic': 'Creative artistic and unique'
-          };
-          const styleName = styleNames[storedStyle] || storedStyle;
-          let contextString = `${styleName} style design`;
-          
-          // Add additional instructions if provided
-          if (storedInstructions) {
-            contextString += `. ${storedInstructions}`;
-          }
-          
-          setHomeContextInput(contextString);
-        } else if (storedInstructions && !urlParam) {
-          // Apply only instructions if no style but instructions are provided
-          // and no screenshot URL is provided
-          setHomeContextInput(storedInstructions);
         }
         
         if (storedModel) {
@@ -279,12 +288,7 @@ function AISandboxPage() {
           await createSandbox(true);
         }
         
-        // If we have a URL from the home page, mark for automatic start
-        if (storedUrl && isMounted) {
-          // We'll trigger the generation after the component is fully mounted
-          // and the startGeneration function is defined
-          sessionStorage.setItem('autoStart', 'true');
-        }
+        // autoStart is already set in sessionStorage from the home page
       } catch (error) {
         console.error('[ai-sandbox] Failed to create or restore sandbox:', error);
         if (isMounted) {
@@ -321,17 +325,6 @@ function AISandboxPage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showHomeScreen]);
   
-  // Start capturing screenshot if URL is provided on mount (from home screen)
-  useEffect(() => {
-    if (!showHomeScreen && homeUrlInput && !urlScreenshot && !isCapturingScreenshot) {
-      let screenshotUrl = homeUrlInput.trim();
-      if (!screenshotUrl.match(/^https?:\/\//i)) {
-        screenshotUrl = 'https://' + screenshotUrl;
-      }
-      captureUrlScreenshot(screenshotUrl);
-    }
-  }, [showHomeScreen, homeUrlInput]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // Auto-start generation if flagged
   useEffect(() => {
     const autoStart = sessionStorage.getItem('autoStart');
@@ -339,7 +332,7 @@ function AISandboxPage() {
       sessionStorage.removeItem('autoStart');
       // Small delay to ensure everything is ready
       setTimeout(() => {
-        console.log('[generation] Auto-starting generation for URL:', homeUrlInput);
+        console.log('[generation] Auto-starting generation for:', homeUrlInput);
         startGeneration();
       }, 1000);
     }
@@ -547,7 +540,7 @@ function AISandboxPage() {
     try {
       const response = await fetch('/api/create-ai-sandbox-v2', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: projectHeaders(),
         body: JSON.stringify({})
       });
       
@@ -907,10 +900,10 @@ Tip: I automatically detect and install npm packages from your code imports (lik
           if (isEdit) {
             addChatMessage(`Edit applied successfully!`, 'system');
           } else {
-            // Check if this is part of a generation flow (has recent AI recreation message)
+            // Check if this is part of a generation flow
             const recentMessages = chatMessages.slice(-5);
             const isPartOfGeneration = recentMessages.some(m => 
-              m.content.includes('AI recreation generated') || 
+              m.content.includes('AI app generation complete!') || 
               m.content.includes('Code generated')
             );
             
@@ -1089,7 +1082,371 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       console.error('[fetchSandboxFiles] Error fetching files:', error);
     }
   };
-  
+
+  const fetchProjectContext = async () => {
+    try {
+      const [secretsRes, contextRes] = await Promise.all([
+        fetch('/api/secrets', { headers: projectHeaders() }),
+        fetch('/api/project-context', { headers: projectHeaders() })
+      ]);
+      if (secretsRes.ok) {
+        const secretsData = await secretsRes.json();
+        if (secretsData.success) {
+          setProjectSecrets(secretsData.secrets || []);
+        }
+      }
+      if (contextRes.ok) {
+        const contextData = await contextRes.json();
+        if (contextData.success) {
+          setProjectIntegrations(contextData.context.integrations || []);
+        }
+      }
+    } catch (error) {
+      console.error('[fetchProjectContext] Error fetching project context:', error);
+    }
+  };
+
+  const fetchSecrets = fetchProjectContext;
+
+  useEffect(() => {
+    fetchProjectContext();
+  }, []);
+
+  const parseSecretRequest = (text: string): SecretRequest | null => {
+    const blockMatch = text.match(/<request_secrets(?:\s+reason="([^"]*)")?\s*>([\s\S]*?)<\/request_secrets>/);
+    if (!blockMatch) return null;
+
+    const secrets: SecretRequest['secrets'] = [];
+    const secretRegex = /<secret\s+([^>]*?)\/?>/g;
+    let match;
+
+    while ((match = secretRegex.exec(blockMatch[2])) !== null) {
+      const attrs = match[1];
+      const name = attrs.match(/name="([^"]+)"/)?.[1]?.trim();
+      const label = attrs.match(/label="([^"]+)"/)?.[1]?.trim();
+      const integration = attrs.match(/integration="([^"]+)"/)?.[1]?.trim();
+      const publicAttr = attrs.match(/public="([^"]+)"/)?.[1]?.trim();
+      if (name) {
+        secrets.push({ name, label, integration, public: publicAttr === 'true' });
+      }
+    }
+
+    if (secrets.length === 0) return null;
+
+    return {
+      reason: blockMatch[1] || 'I need these secrets to continue.',
+      secrets
+    };
+  };
+
+  const stripSecretRequestTags = (text: string) =>
+    text.replace(/<request_secrets[\s\S]*?<\/request_secrets>/g, '').trim();
+
+  const getSecretRequestKey = (request: SecretRequest) =>
+    request.secrets
+      .map(secret => secret.name.trim().toUpperCase())
+      .sort()
+      .join('|');
+
+  const addSecretRequestMessage = (
+    content: string,
+    request: SecretRequest,
+    resume: { prompt: string; source: 'chat' | 'initial' }
+  ) => {
+    const requestKey = getSecretRequestKey(request);
+    pendingSecretResumeRef.current = resume;
+
+    setChatMessages(prev => {
+      const existingIndex = prev.findIndex(message => (
+        message.metadata?.secretRequest &&
+        !message.metadata.secretSubmitted &&
+        getSecretRequestKey(message.metadata.secretRequest) === requestKey
+      ));
+
+      const nextMessage: ChatMessage = {
+        content,
+        type: 'ai',
+        timestamp: new Date(),
+        metadata: {
+          secretRequest: request,
+          secretResumePrompt: resume.prompt,
+          secretResumeSource: resume.source
+        }
+      };
+
+      if (existingIndex >= 0) {
+        return prev.map((message, index) => (
+          index === existingIndex
+            ? {
+                ...message,
+                content,
+                timestamp: new Date(),
+                metadata: {
+                  ...message.metadata,
+                  secretRequest: request,
+                  secretResumePrompt: resume.prompt,
+                  secretResumeSource: resume.source
+                }
+              }
+            : message
+        ));
+      }
+
+      return [...prev, nextMessage];
+    });
+  };
+
+  const saveSecrets = async (secrets: Array<{ name: string; value: string; integration?: string; public?: boolean }>) => {
+    const validSecrets = secrets.filter(secret => secret.name.trim() && secret.value.trim());
+    if (validSecrets.length === 0) return false;
+
+    setSecretStatus('Saving secrets...');
+
+    const response = await fetch('/api/secrets', {
+      method: 'POST',
+      headers: projectHeaders(),
+      body: JSON.stringify({ secrets: validSecrets })
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      setSecretStatus(data.error || 'Failed to save secrets');
+      return false;
+    }
+
+    setProjectSecrets(data.secrets || []);
+    await fetchProjectContext();
+    setTimeout(() => setSecretStatus(''), 2500);
+    return true;
+  };
+
+  const handleAddSecret = async () => {
+    const saved = await saveSecrets([{ name: newSecretName, value: newSecretValue }]);
+    if (saved) {
+      setNewSecretName('');
+      setNewSecretValue('');
+    }
+  };
+
+  const handleDeleteSecret = async (name: string) => {
+const response = await fetch('/api/secrets', {
+      method: 'DELETE',
+      headers: projectHeaders(),
+      body: JSON.stringify({ name })
+    });
+    const data = await response.json();
+    if (data.success) {
+      setProjectSecrets(data.secrets || []);
+    }
+  };
+
+  const handleSubmitRequestedSecrets = async (messageIndex: number, request: SecretRequest) => {
+    const secrets = request.secrets.map(secret => ({
+      name: secret.name,
+      value: secretInputValues[`${messageIndex}:${secret.name}`] || '',
+      integration: secret.integration,
+      public: secret.public
+    }));
+
+    if (secrets.some(secret => !secret.value.trim())) {
+      setSecretStatus('Enter every requested secret before submitting.');
+      return;
+    }
+
+    const saved = await saveSecrets(secrets);
+    if (!saved) return;
+
+    const submittedMessage = chatMessages[messageIndex];
+    const resume = {
+      prompt: submittedMessage?.metadata?.secretResumePrompt || pendingSecretResumeRef.current?.prompt || homeUrlInput.trim(),
+      source: submittedMessage?.metadata?.secretResumeSource || pendingSecretResumeRef.current?.source || 'initial'
+    };
+    const requestKey = getSecretRequestKey(request);
+
+    setChatMessages(prev => prev.map((message, index) => (
+      index === messageIndex ||
+      (
+        message.metadata?.secretRequest &&
+        getSecretRequestKey(message.metadata.secretRequest) === requestKey
+      )
+        ? {
+            ...message,
+            content: 'Secrets submitted. Continuing generation...',
+            metadata: {
+              ...message.metadata,
+              secretSubmitted: true
+            }
+          }
+        : message
+    )));
+
+    addChatMessage(
+      `Saved ${secrets.length} secret${secrets.length === 1 ? '' : 's'}. Continuing generation...`,
+      'system'
+    );
+
+    pendingSecretResumeRef.current = null;
+
+    setTimeout(() => {
+      if (resume.source === 'chat') {
+        void sendChatMessage(resume.prompt, { skipUserMessage: true });
+      } else {
+        void startGeneration({ preserveMessages: true });
+      }
+    }, 150);
+  };
+
+  const renderSecretsTab = () => (
+    <div className="absolute inset-0 overflow-y-auto bg-white">
+      <div className="border-b border-gray-200 px-6 py-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-base font-semibold text-gray-950">Secrets</h2>
+            <p className="mt-1 text-sm text-gray-500">
+              Values are stored for this project and synced into the sandbox as env variables.
+            </p>
+          </div>
+          {secretStatus && (
+            <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
+              {secretStatus}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="px-6 py-5">
+        {/* Integrations Status */}
+        {projectIntegrations.length > 0 && (
+          <div className="mb-6">
+            <h3 className="mb-2 text-sm font-semibold text-gray-950">Integrations</h3>
+            <div className="grid gap-2">
+              {projectIntegrations.map(integration => (
+                <div key={integration.provider} className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <div className={`h-2 w-2 rounded-full ${integration.status === 'connected' ? 'bg-green-500' : 'bg-amber-400'}`} />
+                    <span className="text-sm font-medium text-gray-900">{integration.displayName}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {integration.status === 'connected' ? (
+                      <span className="text-xs font-medium text-green-600">Connected</span>
+                    ) : (
+                      <span className="text-xs text-amber-600">
+                        Missing: {integration.requiredSecrets
+                          .filter((secret: any) => !integration.connectedSecrets.includes(secret.name))
+                          .map((secret: any) => secret.label || secret.name)
+                          .join(', ')}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="mb-5 grid grid-cols-[minmax(180px,0.9fr)_minmax(220px,1.1fr)_auto] gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+          <input
+            value={newSecretName}
+            onChange={(event) => setNewSecretName(event.target.value)}
+            placeholder="VITE_PUBLIC_KEY"
+            className="h-10 rounded-md border border-gray-200 bg-white px-3 text-sm font-mono text-gray-900 outline-none transition focus:border-gray-400 focus:ring-2 focus:ring-gray-100"
+          />
+          <input
+            value={newSecretValue}
+            onChange={(event) => setNewSecretValue(event.target.value)}
+            placeholder="Secret value"
+            type="password"
+            className="h-10 rounded-md border border-gray-200 bg-white px-3 text-sm text-gray-900 outline-none transition focus:border-gray-400 focus:ring-2 focus:ring-gray-100"
+          />
+          <button
+            onClick={handleAddSecret}
+            disabled={!newSecretName.trim() || !newSecretValue.trim()}
+            className="inline-flex h-10 items-center gap-2 rounded-md bg-gray-950 px-4 text-sm font-medium text-white transition hover:bg-gray-800 disabled:bg-gray-200 disabled:text-gray-500"
+          >
+            <FiPlus className="h-4 w-4" />
+            Add
+          </button>
+        </div>
+
+        <div className="overflow-hidden rounded-lg border border-gray-200">
+          <div className="grid grid-cols-[minmax(180px,0.9fr)_minmax(220px,1.1fr)_56px] border-b border-gray-200 bg-gray-50 px-4 py-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+            <div>Name</div>
+            <div>Value</div>
+            <div />
+          </div>
+
+          {projectSecrets.length === 0 ? (
+            <div className="flex min-h-[160px] flex-col items-center justify-center gap-2 px-6 py-10 text-center">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 text-gray-500">
+                <FiLock className="h-5 w-5" />
+              </div>
+              <div className="text-sm font-medium text-gray-900">No secrets yet</div>
+              <div className="max-w-sm text-sm text-gray-500">
+                Add one manually, or let the AI ask for required env variables in chat.
+              </div>
+            </div>
+          ) : (
+            projectSecrets.map(secret => (
+              <div
+                key={secret.name}
+                className="grid grid-cols-[minmax(180px,0.9fr)_minmax(220px,1.1fr)_56px] items-center border-b border-gray-100 px-4 py-3 last:border-b-0"
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-gray-100 text-gray-600">
+                    <FiKey className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="truncate font-mono text-sm font-medium text-gray-950">{secret.name}</div>
+                    {secret.integration && (
+                      <div className="text-xs text-gray-400">{secret.integration}</div>
+                    )}
+                  </div>
+                </div>
+                <div className="flex min-w-0 items-center justify-between gap-3 font-mono text-sm text-gray-500">
+                  <span className="truncate">{visibleSecrets.has(secret.name) ? 'Saved secret value' : secret.maskedValue}</span>
+                  <button
+                    onClick={() => {
+                      setVisibleSecrets(prev => {
+                        const next = new Set(prev);
+                        if (next.has(secret.name)) next.delete(secret.name);
+                        else next.add(secret.name);
+                        return next;
+                      });
+                    }}
+                    className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md text-gray-500 transition hover:bg-gray-100 hover:text-gray-900"
+                    title={visibleSecrets.has(secret.name) ? 'Hide value' : 'Show value'}
+                  >
+                    {visibleSecrets.has(secret.name) ? <FiEyeOff className="h-4 w-4" /> : <FiEye className="h-4 w-4" />}
+                  </button>
+                </div>
+                <button
+                  onClick={() => handleDeleteSecret(secret.name)}
+                  className="flex h-8 w-8 items-center justify-center rounded-md text-gray-400 transition hover:bg-red-50 hover:text-red-600"
+                  title="Delete secret"
+                >
+                  <FiTrash2 className="h-4 w-4" />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="border-t border-gray-200 px-6 py-5">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-base font-semibold text-gray-950">Configurations</h3>
+          <button className="inline-flex h-9 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 transition hover:bg-gray-50">
+            <FiPlus className="h-4 w-4" />
+            New configuration
+          </button>
+        </div>
+        <p className="text-sm text-gray-600">
+          Use configurations for non-sensitive values that can be visible in generated code.
+        </p>
+      </div>
+    </div>
+  );
+
 //   const restartViteServer = async () => {
 //     try {
 //       addChatMessage('Restarting Vite dev server...', 'system');
@@ -1142,6 +1499,10 @@ Tip: I automatically detect and install npm packages from your code imports (lik
 //   };
 
   const renderMainContent = () => {
+    if (activeTab === 'secrets') {
+      return renderSecretsTab();
+    }
+
     if (activeTab === 'generation' && (generationProgress.isGenerating || generationProgress.files.length > 0)) {
       return (
         /* Generation Tab Content */
@@ -1716,8 +2077,11 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     return null;
   };
 
-  const sendChatMessage = async () => {
-    const message = aiChatInput.trim();
+  const sendChatMessage = async (
+    messageOverride?: string,
+    options: { skipUserMessage?: boolean } = {}
+  ) => {
+    const message = (messageOverride ?? aiChatInput).trim();
     if (!message) return;
     
     if (!aiEnabled) {
@@ -1725,8 +2089,12 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       return;
     }
     
-    addChatMessage(message, 'user');
-    setAiChatInput('');
+    if (!options.skipUserMessage) {
+      addChatMessage(message, 'user');
+    }
+    if (!messageOverride) {
+      setAiChatInput('');
+    }
     
     // Check for special commands
     const lowerMessage = message.toLowerCase().trim();
@@ -1797,7 +2165,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       
       const response = await fetch('/api/generate-ai-code-stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: projectHeaders(),
         body: JSON.stringify({
           prompt: message,
           model: aiModel,
@@ -1814,6 +2182,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       const decoder = new TextDecoder();
       let generatedCode = '';
       let explanation = '';
+      let waitingForSecrets = false;
       let buffer = ''; // Buffer for incomplete lines
       
       if (reader) {
@@ -1851,6 +2220,23 @@ Tip: I automatically detect and install npm packages from your code imports (lik
                 } else if (data.type === 'conversation') {
                   // Add conversational text to chat only if it's not code
                   let text = data.text || '';
+                  const secretRequest = parseSecretRequest(text);
+                  if (secretRequest) {
+                    addSecretRequestMessage(
+                      stripSecretRequestTags(text) || secretRequest.reason,
+                      secretRequest,
+                      { prompt: message, source: 'chat' }
+                    );
+                    waitingForSecrets = true;
+                    setGenerationProgress(prev => ({
+                      ...prev,
+                      isGenerating: false,
+                      isStreaming: false,
+                      isThinking: false,
+                      status: 'Waiting for secrets'
+                    }));
+                    continue;
+                  }
                   
                   // Remove package tags from the text
                   text = text.replace(/<package>[^<]*<\/package>/g, '');
@@ -1866,7 +2252,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
                   setGenerationProgress(prev => {
                     const newStreamedCode = prev.streamedCode + data.text;
                     
-                    // Tab is already switched after scraping
+                    // Tab is already switched
                     
                     const updatedState = { 
                       ...prev, 
@@ -1982,6 +2368,18 @@ Tip: I automatically detect and install npm packages from your code imports (lik
                 } else if (data.type === 'complete') {
                   generatedCode = data.generatedCode;
                   explanation = data.explanation;
+
+                  const secretRequest = parseSecretRequest(generatedCode) || parseSecretRequest(explanation || '');
+                  if (secretRequest) {
+                    generatedCode = stripSecretRequestTags(generatedCode);
+                    explanation = stripSecretRequestTags(explanation || '');
+                    addSecretRequestMessage(
+                      stripSecretRequestTags(explanation || secretRequest.reason) || secretRequest.reason,
+                      secretRequest,
+                      { prompt: message, source: 'chat' }
+                    );
+                    waitingForSecrets = true;
+                  }
                   
                   // Save the last generated code
                   setConversationContext(prev => ({
@@ -2046,6 +2444,18 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         }
       }
       
+      if (waitingForSecrets && !generatedCode.trim()) {
+        setGenerationProgress(prev => ({
+          ...prev,
+          isGenerating: false,
+          isStreaming: false,
+          isThinking: false,
+          status: 'Waiting for secrets'
+        }));
+        setLoading(false);
+        return;
+      }
+
       if (generatedCode) {
         // Parse files from generated code for metadata
         const fileRegex = /<file path="([^"]+)">([^]*?)<\/file>/g;
@@ -2631,8 +3041,9 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     await startGeneration();
   };
 
-  const startGeneration = async () => {
+  const startGeneration = async (options: { preserveMessages?: boolean } = {}) => {
     if (!homeUrlInput.trim()) return;
+    const userDescription = homeUrlInput.trim();
     
     setHomeScreenFading(true);
     
@@ -2646,36 +3057,23 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     // Set loading background to ensure proper visual feedback
     setShowLoadingBackground(true);
     
-    // Clear messages and immediately show the initial message
-    setChatMessages([]);
-    let displayUrl = homeUrlInput.trim();
-    if (!displayUrl.match(/^https?:\/\//i)) {
-      displayUrl = 'https://' + displayUrl;
+    // Clear messages and immediately show the initial message for fresh generations.
+    if (!options.preserveMessages) {
+      setChatMessages([]);
     }
-    // Remove protocol for cleaner display
-    const cleanUrl = displayUrl.replace(/^https?:\/\//i, '');
-
-    // Check if we're in brand extension mode
-    const brandExtensionMode = sessionStorage.getItem('brandExtensionMode') === 'true';
 
     addChatMessage(
-      brandExtensionMode
-        ? `Analyzing brand from ${cleanUrl}...`
-        : `Starting to clone ${cleanUrl}...`,
+      `Building your web app: "${userDescription}"...`,
       'system'
     );
     
-    // Start creating sandbox and capturing screenshot immediately in parallel
+    // Start creating sandbox if it doesn't exist
     const sandboxPromise = !sandboxData ? createSandbox(true) : Promise.resolve(null);
     
     // Set loading stage immediately before hiding home screen
     setLoadingStage('gathering');
     // Also ensure we're on preview tab to show the loading overlay
     setActiveTab('preview');
-    
-    // Always capture screenshot for new URLs, even if sandbox exists
-    // This ensures the loading screen shows properly
-    captureUrlScreenshot(displayUrl);
     
     setTimeout(async () => {
       setShowHomeScreen(false);
@@ -2687,316 +3085,38 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       }, 1000);
       
       // Wait for sandbox to be ready (if it's still creating)
-      const createdSandbox = await sandboxPromise;
+      await sandboxPromise;
       
-      // Now start the clone process which will stream the generation
       setUrlInput(homeUrlInput);
-      setUrlOverlayVisible(false); // Make sure overlay is closed
-      setUrlStatus(['Scraping website content...']);
-      
+      setUrlOverlayVisible(false);
+
       try {
-        // Scrape the website
-        let url = homeUrlInput.trim();
-        if (!url.match(/^https?:\/\//i)) {
-          url = 'https://' + url;
-        }
-
-        // Check if we're in brand extension mode
-        const brandExtensionMode = sessionStorage.getItem('brandExtensionMode') === 'true';
-        const brandExtensionPrompt = sessionStorage.getItem('brandExtensionPrompt') || '';
-
-        // Screenshot is already being captured in parallel above
-
-        let scrapeData: ScrapeData | undefined;
-        let brandGuidelines: any;
-
-        if (brandExtensionMode) {
-          // === BRAND EXTENSION MODE ===
-          addChatMessage('Extracting brand styles from the website...', 'system');
-
-          // Call the brand extraction endpoint
-          const extractResponse = await fetch('/api/extract-brand-styles', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              url,
-              prompt: brandExtensionPrompt
-            })
-          });
-
-          if (!extractResponse.ok) {
-            throw new Error('Failed to extract brand styles');
-          }
-
-          brandGuidelines = await extractResponse.json();
-
-          if (!brandGuidelines.success) {
-            throw new Error(brandGuidelines.error || 'Failed to extract brand styles');
-          }
-
-          // Display branding summary with visual UI
-          addChatMessage(`Acquired branding format from ${cleanUrl}`, 'system', {
-            brandingData: brandGuidelines.guidelines,
-            sourceUrl: cleanUrl
-          });
-          addChatMessage(`Building your custom component using these brand guidelines...`, 'system');
-
-          // Clear the flags after use
-          sessionStorage.removeItem('brandExtensionMode');
-          sessionStorage.removeItem('brandExtensionPrompt');
-
-        } else {
-          // === NORMAL CLONE MODE ===
-          // Check if we have pre-scraped markdown content from search results
-          const storedMarkdown = sessionStorage.getItem('siteMarkdown');
-        if (storedMarkdown) {
-          // Use the pre-scraped content
-          scrapeData = {
-            success: true,
-            content: storedMarkdown,
-            title: new URL(url).hostname,
-            source: 'search-result'
-          };
-          sessionStorage.removeItem('siteMarkdown'); // Clear after use
-          addChatMessage('Using cached content from search results...', 'system');
-        } else {
-          // Perform fresh scraping
-          const scrapeResponse = await fetch('/api/scrape-url-enhanced', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url })
-          });
-          
-          if (!scrapeResponse.ok) {
-            throw new Error('Failed to scrape website');
-          }
-          
-          scrapeData = await scrapeResponse.json() as ScrapeData;
-          
-          if (!scrapeData.success) {
-            throw new Error(scrapeData.error || 'Failed to scrape website');
-          }
-        }
-        }
-
-        setUrlStatus(brandExtensionMode ? ['Brand styles extracted!', 'Building your component...'] : ['Website scraped successfully!', 'Generating React app...']);
-
-        // Clear preparing design state and switch to generation tab
-        setIsPreparingDesign(false);
-        setIsScreenshotLoaded(false); // Reset loaded state
-        setUrlScreenshot(null); // Clear screenshot when starting generation
-        setTargetUrl(''); // Clear target URL
-
-        // Update loading stage to planning
+        // Update loading stage to planning then generating
         setLoadingStage('planning');
 
-        // Brief pause before switching to generation tab
         setTimeout(() => {
           setLoadingStage('generating');
           setActiveTab('generation');
-        }, 1500);
+        }, 1000);
 
-        // Build the appropriate prompt based on mode
-        let prompt;
+        // Build the prompt from the user's description
+        const prompt = `Build a complete React web application based on this description:
 
-        if (brandExtensionMode && brandGuidelines) {
-          // === BRAND EXTENSION PROMPT ===
-          // Store brand guidelines in conversation context
-          setConversationContext(prev => ({
-            ...prev,
-            scrapedWebsites: [...prev.scrapedWebsites, {
-              url: url,
-              content: { brandGuidelines },
-              timestamp: new Date()
-            }],
-            currentProject: `Custom build using ${url} brand`
-          }));
+${userDescription}
 
-          // Extract comprehensive brand data
-          const branding = brandGuidelines.guidelines;
-
-          // Build detailed brand instruction string
-          const brandInstructions = `
-BRAND GUIDELINES FROM ${url}:
-
-COLOR SYSTEM:
-- Color Scheme: ${branding.colorScheme || 'light'} mode
-- Primary Color: ${branding.colors?.primary || 'not specified'}
-- Accent Color: ${branding.colors?.accent || 'not specified'}
-- Background: ${branding.colors?.background || 'not specified'}
-- Text Primary: ${branding.colors?.textPrimary || 'not specified'}
-- Link Color: ${branding.colors?.link || 'not specified'}
-
-TYPOGRAPHY:
-- Primary Font: ${branding.typography?.fontFamilies?.primary || 'system default'}
-- Heading Font: ${branding.typography?.fontFamilies?.heading || 'system default'}
-- Font Stack (Body): ${branding.typography?.fontStacks?.body?.join(', ') || 'system-ui, sans-serif'}
-- Font Stack (Heading): ${branding.typography?.fontStacks?.heading?.join(', ') || 'system-ui, sans-serif'}
-- H1 Size: ${branding.typography?.fontSizes?.h1 || '36px'}
-- H2 Size: ${branding.typography?.fontSizes?.h2 || '30px'}
-- Body Size: ${branding.typography?.fontSizes?.body || '16px'}
-
-SPACING & LAYOUT:
-- Base Spacing Unit: ${branding.spacing?.baseUnit || '4'}px
-- Border Radius: ${branding.spacing?.borderRadius || '6px'}
-
-BUTTON STYLES:
-Primary Button:
-  - Background: ${branding.components?.buttonPrimary?.background || branding.colors?.primary}
-  - Text Color: ${branding.components?.buttonPrimary?.textColor || '#FFFFFF'}
-  - Border Radius: ${branding.components?.buttonPrimary?.borderRadius || branding.spacing?.borderRadius || '8px'}
-  - Shadow: ${branding.components?.buttonPrimary?.shadow || 'none'}
-
-Secondary Button:
-  - Background: ${branding.components?.buttonSecondary?.background || '#F9F9F9'}
-  - Text Color: ${branding.components?.buttonSecondary?.textColor || branding.colors?.textPrimary}
-  - Border Radius: ${branding.components?.buttonSecondary?.borderRadius || branding.spacing?.borderRadius || '8px'}
-  - Shadow: ${branding.components?.buttonSecondary?.shadow || 'none'}
-
-INPUT FIELDS:
-- Border Color: ${branding.components?.input?.borderColor || '#CCCCCC'}
-- Border Radius: ${branding.components?.input?.borderRadius || branding.spacing?.borderRadius || '6px'}
-
-BRAND PERSONALITY:
-- Tone: ${branding.personality?.tone || 'professional'}
-- Energy: ${branding.personality?.energy || 'medium'}
-- Target Audience: ${branding.personality?.targetAudience || 'general'}
-
-DESIGN SYSTEM:
-- Framework: ${branding.designSystem?.framework || 'tailwind'}
-- Component Library: ${branding.designSystem?.componentLibrary || 'custom'}
-
-ASSETS:
-${branding.images?.logo ? `- Logo Available: Yes (use carefully if needed)` : '- Logo: Not available'}
-${branding.images?.favicon ? `- Favicon: ${branding.images.favicon}` : ''}`;
-
-          prompt = `I want you to build a NEW React component/application based on these brand guidelines and the user's requirements.
-
-<branding-format source="${url}">
-${brandInstructions}
-
-RAW BRAND DATA (for reference):
-${JSON.stringify(branding, null, 2)}
-</branding-format>
-
-USER'S REQUEST:
-${brandExtensionPrompt || 'Build a modern web component using these brand guidelines'}
-
-IMPORTANT: The content above in the <branding-format> tags contains the extracted brand guidelines from ${url}.
-Use these guidelines (colors, fonts, spacing, design patterns) to build what the user requested.
-
-CRITICAL REQUIREMENTS:
-- DO NOT recreate the original website at ${url}
-- DO create a COMPLETELY NEW component that fulfills the user's request
-- The user wants: "${brandExtensionPrompt}"
-- Build ONLY what the user requested - nothing more
-- App.jsx should render ONLY the requested component - no extra Header/Footer/Hero unless specifically requested
-- Make it a minimal, focused implementation of the user's request
-
-STYLING REQUIREMENTS:
-- Apply the EXACT colors from the brand palette (primary, accent, background, text colors)
-- Use the EXACT typography (font families, font sizes for h1, h2, body)
-- Apply the spacing system (base unit: ${branding.spacing?.baseUnit || '4'}px)
-- Use the specified border radius (${branding.spacing?.borderRadius || '6px'}) consistently
-- Implement button styles EXACTLY as specified (colors, shadows, border radius)
-- Style input fields with the exact border color and border radius
-- Match the brand's ${branding.colorScheme || 'light'} color scheme
-- Apply the brand personality: ${branding.personality?.tone || 'professional'} tone with ${branding.personality?.energy || 'medium'} energy
-- Use Tailwind CSS with inline color values matching the brand palette EXACTLY
-- If fonts need to be imported, add @import or @font-face rules to index.css
-- Create custom CSS classes in index.css for complex shadows/effects that can't be done with Tailwind
-
-FONT SETUP:
-${branding.typography?.fontFamilies?.primary ? `
-- Add font family "${branding.typography.fontFamilies.primary}" to your CSS
-- Use font stack: ${branding.typography?.fontStacks?.body?.join(', ') || 'system-ui, sans-serif'}
-- Set body font size to ${branding.typography?.fontSizes?.body || '16px'}` : '- Use system fonts'}
-
-COMPONENT STRUCTURE:
-- src/index.css - Include brand fonts, custom shadows/effects, and base styling
-- src/App.jsx - Should ONLY render the requested component (e.g., just <PricingPage /> if user wants pricing)
-- src/components/[RequestedComponent].jsx - The actual component fulfilling the user's request
-
-TECHNICAL REQUIREMENTS:
-- Create a WORKING, self-contained application
-- DO NOT import components that don't exist
-- Make sure the app renders immediately with visible content
-- All colors must match the brand palette EXACTLY
-- All spacing must use the ${branding.spacing?.baseUnit || '4'}px base unit
-- Buttons must have the exact styling specified in the guidelines
-
-Focus on building something NEW, minimal, and functional that perfectly matches the ${brandGuidelines.styleName || 'brand'} aesthetic and design system.`;
-
-        } else {
-          // === NORMAL CLONE MODE PROMPT ===
-          // Store scraped data in conversation context
-          if (!scrapeData) {
-            throw new Error('Scrape data is missing');
-          }
-          setConversationContext(prev => ({
-            ...prev,
-            scrapedWebsites: [...prev.scrapedWebsites, {
-              url: url,
-              content: scrapeData,
-              timestamp: new Date()
-            }],
-            currentProject: `${url} Clone`
-          }));
-
-          // Filter out style-related context when using screenshot/URL-based generation
-          // Only keep user's explicit instructions, not inherited styles
-          let filteredContext = homeContextInput;
-          if (homeUrlInput && homeContextInput) {
-            // Check if the context contains default style names that shouldn't be inherited
-            const stylePatterns = [
-              'Glassmorphism style design',
-              'Neumorphism style design',
-              'Brutalism style design',
-              'Minimalist style design',
-              'Dark Mode style design',
-              'Gradient Rich style design',
-              '3D Depth style design',
-              'Retro Wave style design',
-              'Modern clean and minimalist style design',
-              'Fun colorful and playful style design',
-              'Corporate professional and sleek style design',
-              'Creative artistic and unique style design'
-            ];
-
-            // If the context exactly matches or starts with a style pattern, filter it out
-            const startsWithStyle = stylePatterns.some(pattern =>
-              homeContextInput.trim().startsWith(pattern)
-            );
-
-            if (startsWithStyle) {
-              // Extract only the additional instructions part after the style
-              const additionalMatch = homeContextInput.match(/\. (.+)$/);
-              filteredContext = additionalMatch ? additionalMatch[1] : '';
-            }
-          }
-
-          prompt = `I want to recreate the ${url} website as a complete React application based on the scraped content below.
-
-${JSON.stringify(scrapeData, null, 2)}
-
-${filteredContext ? `ADDITIONAL CONTEXT/REQUIREMENTS FROM USER:
-${filteredContext}
-
-Please incorporate these requirements into the design and implementation.` : ''}
+${homeContextInput ? `Additional requirements: ${homeContextInput}` : ''}
 
 IMPORTANT INSTRUCTIONS:
-- Create a COMPLETE, working React application
-- Implement ALL sections and features from the original site
-- Use Tailwind CSS for all styling (no custom CSS files)
-- Make it responsive and modern
-- Ensure all text content matches the original
-- Create proper component structure
-- Make sure the app actually renders visible content
-- Create ALL components that you reference in imports
-${filteredContext ? '- Apply the user\'s context/theme requirements throughout the application' : ''}
+- Create a COMPLETE, working React application with Vite
+- Use Tailwind CSS for all styling (no custom CSS files beyond index.css)
+- Make it responsive and modern with proper mobile-first design
+- Create separate components for major sections
+- Generate ALL components you reference in imports
+- Make the app visually impressive with proper styling, hover effects, and transitions
+- Include at minimum: a Header with navigation, Hero section, main content, and Footer
+- Use standard Tailwind CSS classes only (bg-white, text-gray-900, etc.)
 
-Focus on the key sections and content, making it clean and modern.`;
-        }
+Focus on creating a polished, professional application that looks great and works perfectly.`;
 
         setGenerationProgress(prev => ({
           isGenerating: true,
@@ -3016,7 +3136,7 @@ Focus on the key sections and content, making it clean and modern.`;
         
         const aiResponse = await fetch('/api/generate-ai-code-stream', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: projectHeaders(),
           body: JSON.stringify({ 
             prompt,
             model: aiModel,
@@ -3036,6 +3156,7 @@ Focus on the key sections and content, making it clean and modern.`;
         const decoder = new TextDecoder();
         let generatedCode = '';
         let explanation = '';
+        let waitingForSecrets = false;
         
         while (true) {
           const { done, value } = await reader.read();
@@ -3066,6 +3187,23 @@ Focus on the key sections and content, making it clean and modern.`;
                 } else if (data.type === 'conversation') {
                   // Add conversational text to chat only if it's not code
                   let text = data.text || '';
+                  const secretRequest = parseSecretRequest(text);
+                  if (secretRequest) {
+                    addSecretRequestMessage(
+                      stripSecretRequestTags(text) || secretRequest.reason,
+                      secretRequest,
+                      { prompt: userDescription, source: 'initial' }
+                    );
+                    waitingForSecrets = true;
+                    setGenerationProgress(prev => ({
+                      ...prev,
+                      isGenerating: false,
+                      isStreaming: false,
+                      isThinking: false,
+                      status: 'Waiting for secrets'
+                    }));
+                    continue;
+                  }
                   
                   // Remove package tags from the text
                   text = text.replace(/<package>[^<]*<\/package>/g, '');
@@ -3081,7 +3219,7 @@ Focus on the key sections and content, making it clean and modern.`;
                   setGenerationProgress(prev => {
                     const newStreamedCode = prev.streamedCode + data.text;
                     
-                    // Tab is already switched after scraping
+                    // Tab is already switched
                     
                     const updatedState = { 
                       ...prev, 
@@ -3172,9 +3310,23 @@ Focus on the key sections and content, making it clean and modern.`;
                     
                     return updatedState;
                   });
+                } else if (data.type === 'error') {
+                  throw new Error(data.error || data.message);
                 } else if (data.type === 'complete') {
                   generatedCode = data.generatedCode;
                   explanation = data.explanation;
+
+                  const secretRequest = parseSecretRequest(generatedCode) || parseSecretRequest(explanation || '');
+                  if (secretRequest) {
+                    generatedCode = stripSecretRequestTags(generatedCode);
+                    explanation = stripSecretRequestTags(explanation || '');
+                    addSecretRequestMessage(
+                      stripSecretRequestTags(explanation || secretRequest.reason) || secretRequest.reason,
+                      secretRequest,
+                      { prompt: userDescription, source: 'initial' }
+                    );
+                    waitingForSecrets = true;
+                  }
                   
                   // Save the last generated code
                   setConversationContext(prev => ({
@@ -3196,8 +3348,23 @@ Focus on the key sections and content, making it clean and modern.`;
           status: 'Generation complete!'
         }));
         
+        if (waitingForSecrets && !generatedCode.trim()) {
+          setGenerationProgress(prev => ({
+            ...prev,
+            isGenerating: false,
+            isStreaming: false,
+            isThinking: false,
+            status: 'Waiting for secrets'
+          }));
+          setUrlStatus([]);
+          setIsPreparingDesign(false);
+          setIsStartingNewGeneration(false);
+          setLoadingStage(null);
+          return;
+        }
+
         if (generatedCode) {
-          addChatMessage('AI recreation generated!', 'system');
+          addChatMessage('AI app generation complete!', 'system');
           
           // Add the explanation to chat if available
           if (explanation && explanation.trim()) {
@@ -3210,13 +3377,9 @@ Focus on the key sections and content, making it clean and modern.`;
           await applyGeneratedCode(generatedCode, false);
 
           addChatMessage(
-            brandExtensionMode
-              ? `Successfully built your custom component using ${cleanUrl}'s brand guidelines! You can now ask me to modify it or add more features.`
-              : `Successfully recreated ${url} as a modern React app${homeContextInput ? ` with your requested context: "${homeContextInput}"` : ''}! The scraped content is now in my context, so you can ask me to modify specific sections or add features based on the original site.`,
+            `Successfully built your web app! You can now ask me to modify it or add more features.`,
             'ai',
             {
-              scrapedUrl: url,
-              scrapedContent: brandExtensionMode ? { brandGuidelines } : scrapeData,
               generatedCode: generatedCode
             }
           );
@@ -3260,18 +3423,16 @@ Focus on the key sections and content, making it clean and modern.`;
           setActiveTab('preview');
         }, 1000); // Show completion briefly then switch
       } catch (error: any) {
-        addChatMessage(`Failed to clone website: ${error.message}`, 'system');
+        addChatMessage(`Failed to build app: ${error.message}`, 'system');
         setUrlStatus([]);
         setIsPreparingDesign(false);
-        setIsStartingNewGeneration(false); // Clear new generation flag on error
+        setIsStartingNewGeneration(false);
         setLoadingStage(null);
-        // Also clear generation progress on error
         setGenerationProgress(prev => ({
           ...prev,
           isGenerating: false,
           isStreaming: false,
           status: '',
-          // Keep files to display in sidebar
           files: prev.files
         }));
       }
@@ -3345,22 +3506,16 @@ Focus on the key sections and content, making it clean and modern.`;
           {!hasInitialSubmission ? (
             <div className="p-4 border-b border-border">
               <SidebarInput
-                onSubmit={(url, style, model, instructions) => {
+                onSubmit={(prompt, model) => {
                   // Mark that we've had an initial submission
                   setHasInitialSubmission(true);
                   
-                  // Store the configuration in sessionStorage (same as home page)
-                  sessionStorage.setItem('targetUrl', url);
-                  sessionStorage.setItem('selectedStyle', style);
+                  // Store the configuration in sessionStorage
                   sessionStorage.setItem('selectedModel', model);
-                  if (instructions) {
-                    sessionStorage.setItem('additionalInstructions', instructions);
-                  }
                   sessionStorage.setItem('autoStart', 'true');
                   
                   // Start generation using the existing logic
-                  setHomeUrlInput(url);
-                  setHomeContextInput(instructions || '');
+                  setHomeUrlInput(prompt);
                   startGeneration();
                 }}
                 disabled={loading || generationProgress.isGenerating}
@@ -3456,8 +3611,8 @@ Focus on the key sections and content, making it clean and modern.`;
             ref={chatMessagesRef}>
             {chatMessages.map((msg, idx) => {
               // Check if this message is from a successful generation
-              const isGenerationComplete = msg.content.includes('Successfully recreated') || 
-                                         msg.content.includes('AI recreation generated!') ||
+              const isGenerationComplete = msg.content.includes('Successfully built') || 
+                                         msg.content.includes('AI app generation complete!') ||
                                          msg.content.includes('Code generated!');
               
               // Get the files from metadata if this is a completion message
@@ -3506,6 +3661,74 @@ Focus on the key sections and content, making it clean and modern.`;
                       <span className="text-sm">{msg.content}</span>
                     )}
                       </div>
+
+                      {msg.metadata?.secretRequest && (
+                        <div className="mt-3 w-full max-w-[440px] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+                          <div className="flex items-start gap-3 border-b border-gray-200 bg-gray-50 px-4 py-3">
+                            <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-white text-gray-600 shadow-sm ring-1 ring-gray-200">
+                              <FiLock className="h-4 w-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold text-gray-950">Required secrets</div>
+                              <div className="mt-1 text-xs leading-5 text-gray-500">
+                                These values will be saved as sandbox environment variables.
+                              </div>
+                            </div>
+                          </div>
+                          <div className="space-y-3 px-4 py-4">
+                            {msg.metadata.secretRequest.secrets.map(secret => (
+                              <label key={secret.name} className="block">
+                                <div className="mb-1.5 flex items-center justify-between gap-3">
+                                  <span className="truncate text-xs font-medium text-gray-600">
+                                    {secret.label || secret.name}
+                                  </span>
+                                  <span className="truncate font-mono text-[11px] text-gray-400">
+                                    {secret.name}
+                                  </span>
+                                </div>
+                                <div className="relative">
+                                  <input
+                                    value={secretInputValues[`${idx}:${secret.name}`] || ''}
+                                    onChange={(event) => {
+                                      const key = `${idx}:${secret.name}`;
+                                      setSecretInputValues(prev => ({ ...prev, [key]: event.target.value }));
+                                    }}
+                                    disabled={msg.metadata?.secretSubmitted}
+                                    type={visibleSecrets.has(`${idx}:${secret.name}`) ? 'text' : 'password'}
+                                    placeholder="Paste value"
+                                    className="h-10 w-full rounded-md border border-gray-200 bg-white px-3 pr-10 font-mono text-sm text-gray-900 outline-none transition focus:border-gray-400 focus:ring-2 focus:ring-gray-100 disabled:bg-gray-50 disabled:text-gray-500"
+                                  />
+                                  <button
+                                    onClick={() => {
+                                      const key = `${idx}:${secret.name}`;
+                                      setVisibleSecrets(prev => {
+                                        const next = new Set(prev);
+                                        if (next.has(key)) next.delete(key);
+                                        else next.add(key);
+                                        return next;
+                                      });
+                                    }}
+                                    className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-gray-500 transition hover:bg-gray-100 hover:text-gray-900"
+                                    title={visibleSecrets.has(`${idx}:${secret.name}`) ? 'Hide value' : 'Show value'}
+                                  >
+                                    {visibleSecrets.has(`${idx}:${secret.name}`) ? <FiEyeOff className="h-4 w-4" /> : <FiEye className="h-4 w-4" />}
+                                  </button>
+                                </div>
+                              </label>
+                            ))}
+                          </div>
+                          <div className="flex justify-end border-t border-gray-200 bg-gray-50 px-4 py-3">
+                            <button
+                              onClick={() => handleSubmitRequestedSecrets(idx, msg.metadata!.secretRequest!)}
+                              disabled={Boolean(msg.metadata.secretSubmitted)}
+                              className="inline-flex h-9 items-center gap-2 rounded-md bg-gray-950 px-4 text-sm font-medium text-white transition hover:bg-gray-800 disabled:bg-gray-200 disabled:text-gray-500"
+                            >
+                              <FiLock className="h-4 w-4" />
+                              {msg.metadata.secretSubmitted ? 'Submitted' : 'Submit'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
                   
                       {/* Show branding data if this is a brand extraction message */}
                       {msg.metadata?.brandingData && (
@@ -3891,6 +4114,21 @@ Focus on the key sections and content, making it clean and modern.`;
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                     </svg>
                     <span>View</span>
+                  </div>
+                </button>
+                <button
+                  onClick={() => setActiveTab('secrets')}
+                  className={`px-3 py-1 rounded transition-all text-xs font-medium ${
+                    activeTab === 'secrets'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'bg-transparent text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 11V7a4 4 0 118 0v4m-9 0h10a1 1 0 011 1v8H6v-8a1 1 0 011-1z" />
+                    </svg>
+                    <span>Secrets</span>
                   </div>
                 </button>
               </div>

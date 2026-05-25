@@ -21,6 +21,85 @@ interface ParsedResponse {
   structure: string | null;
 }
 
+const BUILT_IN_MODULES = new Set([
+  'assert',
+  'buffer',
+  'child_process',
+  'crypto',
+  'events',
+  'fs',
+  'http',
+  'https',
+  'os',
+  'path',
+  'process',
+  'querystring',
+  'stream',
+  'url',
+  'util',
+  'zlib'
+]);
+
+const getPackageNameFromImport = (importPath: string) => {
+  if (
+    !importPath ||
+    importPath.startsWith('.') ||
+    importPath.startsWith('/') ||
+    importPath.startsWith('@/') ||
+    importPath.startsWith('node:') ||
+    importPath.startsWith('vite/') ||
+    importPath.includes('?')
+  ) {
+    return null;
+  }
+
+  const packageName = importPath.startsWith('@')
+    ? importPath.split('/').slice(0, 2).join('/')
+    : importPath.split('/')[0];
+
+  if (!packageName || BUILT_IN_MODULES.has(packageName)) {
+    return null;
+  }
+
+  return packageName;
+};
+
+const extractPackagesFromCode = (content: string) => {
+  const packages = new Set<string>();
+  const patterns = [
+    /(?:import|export)\s+(?:type\s+)?(?:[\s\S]*?\s+from\s*)?['"]([^'"]+)['"]/g,
+    /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+    /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g
+  ];
+
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      const packageName = getPackageNameFromImport(match[1]);
+      if (packageName) {
+        packages.add(packageName);
+      }
+    }
+  }
+
+  return [...packages];
+};
+
+const extractPackagesFromFiles = (files: Array<{ path: string; content: string }>) => {
+  const packages = new Set<string>();
+
+  for (const file of files) {
+    if (!file?.path || typeof file.content !== 'string') continue;
+    if (!file.path.match(/\.(jsx?|tsx?)$/)) continue;
+
+    for (const packageName of extractPackagesFromCode(file.content)) {
+      packages.add(packageName);
+    }
+  }
+
+  return [...packages];
+};
+
 function parseAIResponse(response: string): ParsedResponse {
   const sections = {
     files: [] as Array<{ path: string; content: string }>,
@@ -30,38 +109,6 @@ function parseAIResponse(response: string): ParsedResponse {
     explanation: '',
     template: ''
   };
-
-  // Function to extract packages from import statements
-  function extractPackagesFromCode(content: string): string[] {
-    const packages: string[] = [];
-    // Match ES6 imports
-    const importRegex = /import\s+(?:(?:\{[^}]*\}|\*\s+as\s+\w+|\w+)(?:\s*,\s*(?:\{[^}]*\}|\*\s+as\s+\w+|\w+))*\s+from\s+)?['"]([^'"]+)['"]/g;
-    let importMatch;
-
-    while ((importMatch = importRegex.exec(content)) !== null) {
-      const importPath = importMatch[1];
-      // Skip relative imports and built-in React
-      if (!importPath.startsWith('.') && !importPath.startsWith('/') &&
-        importPath !== 'react' && importPath !== 'react-dom' &&
-        !importPath.startsWith('@/')) {
-        // Extract package name (handle scoped packages like @heroicons/react)
-        const packageName = importPath.startsWith('@')
-          ? importPath.split('/').slice(0, 2).join('/')
-          : importPath.split('/')[0];
-
-        if (!packages.includes(packageName)) {
-          packages.push(packageName);
-
-          // Log important packages for debugging
-          if (packageName === 'react-router-dom' || packageName.includes('router') || packageName.includes('icon')) {
-            console.log(`[apply-ai-code-stream] Detected package from imports: ${packageName}`);
-          }
-        }
-      }
-    }
-
-    return packages;
-  }
 
   // Parse file sections - handle duplicates and prefer complete versions
   const fileMap = new Map<string, { content: string; isComplete: boolean }>();
@@ -427,14 +474,25 @@ export async function POST(request: NextRequest) {
         // Step 1: Install packages
         const packagesArray = Array.isArray(packages) ? packages : [];
         const parsedPackages = Array.isArray(parsed.packages) ? parsed.packages : [];
+        const importPackages = extractPackagesFromFiles(parsed.files);
 
         // Combine and deduplicate packages
-        const allPackages = [...packagesArray.filter(pkg => pkg && typeof pkg === 'string'), ...parsedPackages];
+        const allPackages = [
+          ...packagesArray.filter(pkg => pkg && typeof pkg === 'string'),
+          ...parsedPackages,
+          ...importPackages
+        ];
 
         // Use Set to remove duplicates, then filter out pre-installed packages
-        const uniquePackages = [...new Set(allPackages)]
-          .filter(pkg => pkg && typeof pkg === 'string' && pkg.trim() !== '') // Remove empty strings
-          .filter(pkg => pkg !== 'react' && pkg !== 'react-dom'); // Filter pre-installed
+        const uniquePackages = [...new Set([...new Set(allPackages)]
+          .map(pkg => (typeof pkg === 'string' ? pkg.trim() : ''))
+          .filter(pkg => pkg !== '')
+          .map(pkg => getPackageNameFromImport(pkg) || pkg)
+          .filter(pkg => pkg !== 'react' && pkg !== 'react-dom'))]; // Filter pre-installed
+
+        if (importPackages.length > 0) {
+          console.log('[apply-ai-code-stream] Packages detected from generated imports:', importPackages);
+        }
 
         // Log if we found duplicates
         if (allPackages.length !== uniquePackages.length) {
