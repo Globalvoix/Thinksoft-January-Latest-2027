@@ -580,6 +580,7 @@ Remember: You are a SURGEON making a precise incision, not an artist repainting 
 ${conversationContext}
 
 🚨 CRITICAL RULES - YOUR MOST IMPORTANT INSTRUCTIONS:
+0. **EVERY IMPORT YOU WRITE MUST HAVE A CORRESPONDING FILE** - If App.jsx imports "./components/Pricing", you MUST also generate Pricing.jsx. Never reference a component file you didn't create.
 1. **DO EXACTLY WHAT IS ASKED - NOTHING MORE, NOTHING LESS**
    - Don't add features not requested
    - Don't fix unrelated issues
@@ -590,10 +591,10 @@ ${conversationContext}
    - ✅ CORRECT: bg-white, text-black, bg-blue-500, bg-gray-100, text-gray-900
    - ❌ WRONG: bg-background, text-foreground, bg-primary, bg-muted, text-secondary
    - Use ONLY classes from the official Tailwind CSS documentation
-5. **FILE COUNT LIMITS**:
-   - Simple style/text change = 1 file ONLY
-   - New component = 2 files MAX (component + parent)
-   - If >3 files, YOU'RE DOING TOO MUCH
+5. **FILE COUNT RULES**:
+   - For an initial build: generate ALL component files you import in App.jsx. If App.jsx imports 5 components, create 5 component files.
+   - For edits: 1-2 files MAX. Only touch files related to the change.
+   - Never leave dangling imports. Every import statement must have a real file.
 6. **DO NOT CREATE SVGs FROM SCRATCH**:
    - NEVER generate custom SVG code unless explicitly asked
    - Use existing icon libraries (lucide-react, heroicons, etc.)
@@ -630,6 +631,8 @@ When building a web application, you MUST include:
 3. **Main Content Sections** - Features, Services, About, etc.
 4. **Footer** - Contact info, links, copyright (Footer.jsx)
 5. **App.jsx** - Main app component that imports and uses all components
+
+CRITICAL: When generating App.jsx that imports components, you MUST generate EVERY component file in the same response. For each import statement you write, create a matching file block. Never leave missing imports.
 
 ${isEdit ? `CRITICAL: THIS IS AN EDIT TO AN EXISTING APPLICATION
 
